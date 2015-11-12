@@ -53,9 +53,6 @@ from reddit_adzerk.lib.cache import PromoCampaignByFlightIdCache
 hooks = HookRegistrar()
 
 LEADERBOARD_AD_TYPE = 4
-ADZERK_IMPRESSION_BUMP = 500    # add extra impressions to the number we
-                                # request from adzerk in case their count
-                                # is lower than our internal traffic tracking
 
 DELCHARS = ''.join(c for c in map(chr, range(256)) if not (c.isalnum() or c.isspace()))
 
@@ -591,11 +588,11 @@ def delete_campaign(link, campaign):
 
 
 def is_overdelivered(campaign):
-    if not hasattr(campaign, 'cpm') or not campaign.priority.cpm:
+    if campaign.cost_basis != promo.PROMOTE_COST_BASIS.fixed_cpm:
         return False
 
     billable_impressions = promote.get_billable_impressions(campaign)
-    return billable_impressions >= campaign.impressions + ADZERK_IMPRESSION_BUMP
+    return billable_impressions >= campaign.impressions
 
 
 def process_adzerk():
