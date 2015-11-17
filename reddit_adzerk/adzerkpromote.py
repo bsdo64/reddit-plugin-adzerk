@@ -46,19 +46,29 @@ from r2.models import (
     PromotionLog,
     Subreddit,
 )
+from r2.models import promo
 
 from reddit_adzerk.lib.cache import PromoCampaignByFlightIdCache
 
 hooks = HookRegistrar()
 
 LEADERBOARD_AD_TYPE = 4
-ADZERK_IMPRESSION_BUMP = 500    # add extra impressions to the number we
-                                # request from adzerk in case their count
-                                # is lower than our internal traffic tracking
 
 DELCHARS = ''.join(c for c in map(chr, range(256)) if not (c.isalnum() or c.isspace()))
 
 FREQ_CAP_TYPE = Enum(None, "hour", "day")
+
+RATE_TYPE_BY_COST_BASIS = {
+    promo.PROMOTE_COST_BASIS.fixed_cpm: 2,
+    promo.PROMOTE_COST_BASIS.cpm: 2,
+    promo.PROMOTE_COST_BASIS.cpc: 3,
+}
+
+GOAL_TYPE_BY_COST_BASIS = {
+    promo.PROMOTE_COST_BASIS.fixed_cpm: 1,
+    promo.PROMOTE_COST_BASIS.cpm: 1,
+    promo.PROMOTE_COST_BASIS.cpc: 3,
+}
 
 def sanitize_text(text):
     return _force_utf8(text).translate(None, DELCHARS)
@@ -273,21 +283,31 @@ def update_flight(link, campaign, az_campaign):
     else:
         d['IsFreqCap'] = None
 
-    is_cpm = hasattr(campaign, 'cpm') and campaign.priority.cpm
-    if is_cpm:
+    if campaign.is_house:
+        # house campaigns are flat rate (free) 100% impression goal
         d.update({
-            'Price': campaign.cpm / 100.,   # convert from cents to dollars
-            'Impressions': campaign.impressions + ADZERK_IMPRESSION_BUMP,
-            'GoalType': 1, # 1: Impressions
-            'RateType': 2, # 2: CPM
+            'Price': 0, # free/0 revenue
+            'Impressions': 100, # 100% impressions/rotates with other house campaigns.
+            'GoalType': 2, # percentage
+            'RateType': 1, # flat
         })
     else:
+        # price is bid if the rate type is cpm/cpc
         d.update({
-            'Price': campaign.bid,
-            'Impressions': 100,
-            'GoalType': 2, # 2: Percentage
-            'RateType': 1, # 1: Flat
+            'Price': campaign.bid_pennies / 100., # convert cents to dollars
+            'GoalType': GOAL_TYPE_BY_COST_BASIS[campaign.cost_basis], # goal should be based on billing type
+            'RateType': RATE_TYPE_BY_COST_BASIS[campaign.cost_basis], 
         })
+
+        if campaign.cost_basis == promo.PROMOTE_COST_BASIS.fixed_cpm:
+            d['Impressions'] = campaign.impressions
+        else:
+            d.update({
+                'CapType': 4,
+                'DailyCapAmount': campaign.total_budget_pennies / campaign.ndays,
+                'LifetimeCapAmount': campaign.total_budget_pennies,
+            })
+
 
     # Zerkel queries here
     if campaign.mobile_os:
@@ -580,11 +600,11 @@ def delete_campaign(link, campaign):
 
 
 def is_overdelivered(campaign):
-    if not hasattr(campaign, 'cpm') or not campaign.priority.cpm:
+    if campaign.cost_basis != promo.PROMOTE_COST_BASIS.fixed_cpm:
         return False
 
     billable_impressions = promote.get_billable_impressions(campaign)
-    return billable_impressions >= campaign.impressions + ADZERK_IMPRESSION_BUMP
+    return billable_impressions >= campaign.impressions
 
 
 def process_adzerk():
